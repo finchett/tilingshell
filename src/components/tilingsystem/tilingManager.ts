@@ -2,7 +2,7 @@ import Meta from "gi://Meta";
 import Mtk from "gi://Mtk";
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { logger } from "@/utils/shell";
-import { buildMargin, buildRectangle, buildTileGaps, getScalingFactor, getScalingFactorOf, isPointInsideRect } from "@/utils/ui";
+import { buildMargin, buildRectangle, buildTileGaps, getMonitors, getScalingFactor, getScalingFactorOf, isPointInsideRect } from "@/utils/ui";
 import TilingLayout from "@/components/tilingsystem/tilingLayout";
 import Clutter from "gi://Clutter";
 import GLib from "gi://GLib";
@@ -371,12 +371,7 @@ export class TilingManager {
         this._easeWindowRect(window, selectionRect);
     }
 
-    private _findVacantTile() {
-
-        const otherTiledWindows = this._resizingManager.getWindows().filter(otherWindow =>
-            otherWindow && (otherWindow as ExtendedWindow).isTiled && !otherWindow.minimized);
-
-        const tiles = this._tilingLayout.layout.tiles
+    private _findVacantTile(tiles: Tile[], otherTiledWindows: Meta.Window[]) {
 
         const vacantTile = tiles.find((tile) => {
             const tileRect = TileUtils.apply_props(tile, this._workArea);
@@ -392,6 +387,16 @@ export class TilingManager {
         return vacantTile
     }
 
+    private _setMatchingLayout(tiles: number) {
+
+        const matched_layout = Settings.get_layouts_json().find(layout => layout.tiles.length == tiles);
+
+        if (matched_layout != undefined) {
+            Settings.save_selected_layouts_json(getMonitors().map((monitor) => matched_layout.id));
+            return matched_layout
+        }
+    }
+
     private _isTileable(window: Meta.Window) {
             return (
                 // checks adjusted from https://github.com/pop-os/shell/blob/cfa0c55e84b7ce339e5ce83832f76fee17e99d51/src/window.ts#L326
@@ -404,15 +409,11 @@ export class TilingManager {
 
     }
 
-    private _onFirstFrame(window: Meta.Window) {
+    private _moveWindowToTile(window: Meta.Window, tile: Tile) {
 
-        if (!this._isTileable(window)) { return; }
+        window.unmaximize(Meta.MaximizeFlags.BOTH)
 
-        const vacantTile = this._findVacantTile()
-
-        if (!vacantTile) { return }
-
-        const scaledRect = TileUtils.apply_props(vacantTile, this._workArea);
+        const scaledRect = TileUtils.apply_props(tile, this._workArea);
 
         const gaps = buildTileGaps(
             scaledRect,
@@ -430,7 +431,41 @@ export class TilingManager {
         (window as ExtendedWindow).originalSize = window.get_frame_rect().copy();
         (window as ExtendedWindow).isTiled = true;
 
-        this._easeWindowRect(window, scaledRect);
+        this._easeWindowRect(window, scaledRect);        
+    }
+
+    private async _onFirstFrame(window: Meta.Window) {
+
+        if (!this._isTileable(window)) { return; }
+
+        const otherTiledWindows = this._resizingManager.getWindows().filter(otherWindow =>
+            otherWindow && (otherWindow as ExtendedWindow).isTiled && !otherWindow.minimized);
+
+        const matched_layout = this._setMatchingLayout(otherTiledWindows.length + 1)
+
+        function delay(ms: number) {
+            return new Promise( resolve => setTimeout(resolve, ms) );
+        }
+
+        if (matched_layout != undefined) {
+
+            for (let index = 0; index < otherTiledWindows.length ; index++) {
+                const window = otherTiledWindows[index];
+                const tile = matched_layout.tiles[index]
+                
+                this._moveWindowToTile(window, tile)
+            }
+        }
+
+        await delay(100);
+
+        const tiles = matched_layout?.tiles || this._tilingLayout.layout.tiles
+
+        const vacantTile = this._findVacantTile(tiles, otherTiledWindows)
+
+        if (!vacantTile) { return }
+
+        this._moveWindowToTile(window, vacantTile)
     }
 
 
